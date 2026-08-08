@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guardián de Olvidos v1.6.1</title>
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" type="image/svg+xml" href="./icon.svg">
+    <meta name="theme-color" content="#374151">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brandGray: '#374151',
+                        brandGrayDark: '#1f2937',
+                        brandGreen: '#22c55e',
+                        brandOrange: '#f97316'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-950 text-gray-100 font-sans min-h-screen flex flex-col items-center justify-center p-4">
+    <!-- medbasha -->
+    <div class="max-w-md w-full bg-brandGrayDark rounded-2xl p-6 shadow-2xl border border-brandGray text-center">
+        <div class="w-20 h-20 mx-auto mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" class="w-full h-full drop-shadow-lg">
+                <rect width="512" height="512" rx="100" fill="#1f2937"/>
+                <circle cx="256" cy="256" r="180" fill="none" stroke="#22c55e" stroke-width="16" stroke-dasharray="12 12"/>
+                <rect x="206" y="76" width="100" height="360" rx="20" fill="#374151"/>
+                <circle cx="256" cy="256" r="120" fill="#374151" stroke="#22c55e" stroke-width="12"/>
+                <circle cx="256" cy="256" r="90" fill="#111827"/>
+                <path d="M256 190 v66 h50" fill="none" stroke="#f97316" stroke-width="12" stroke-linecap="round"/>
+                <circle cx="256" cy="256" r="12" fill="#f97316"/>
+            </svg>
+        </div>
+        
+        <h1 class="text-2xl font-bold mb-1 text-brandGreen">Guardián de Olvidos v1.6.1</h1>
+        <p class="text-gray-400 text-sm mb-6">Radar Inteligente Anti-Olvidos</p>
+
+        <div class="mb-6 p-4 rounded-xl bg-gray-900 border border-brandGray">
+            <span class="text-xs uppercase tracking-wider text-gray-400 block mb-1">Estado del Radar</span>
+            <div id="statusBadge" class="text-lg font-semibold text-brandOrange">Radar Inactivo</div>
+            <div id="lastSeen" class="text-xs text-gray-400 mt-1">Esperando vincular dispositivo...</div>
+        </div>
+
+        <div class="space-y-3">
+            <button id="startRadarBtn" class="w-full bg-brandGreen hover:bg-green-600 text-white font-medium py-3 px-4 rounded-xl transition duration-200 shadow-lg flex items-center justify-center gap-2">
+                <span>Vincular Xiaomi Tag</span>
+            </button>
+            <button id="reconnectBtn" class="w-full bg-brandGray hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-xl transition duration-200 hidden">
+                <span>Reintentar Conexión</span>
+            </button>
+        </div>
+
+        <div id="alarmZone" class="mt-6 p-4 rounded-xl bg-gray-900 border border-brandOrange hidden">
+            <p class="text-brandOrange font-bold animate-bounce text-sm">⚠️ ¡DISPOSITIVO FUERA DE RANGO!</p>
+        </div>
+
+        <div class="mt-6 text-left">
+            <span class="text-xs font-mono text-gray-400">Diagnóstico Inteligente:</span>
+            <div id="logTerminal" class="h-28 overflow-y-auto bg-black/70 border border-brandGray rounded-lg p-2 text-xs font-mono text-gray-300 mt-1 space-y-1">
+                <div>[Sistema] Guardián de Olvidos 1.6.1 listo.</div>
+            </div>
+        </div>
+    </div>
+
+    <audio id="silentAudio" loop>
+        <source src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==" type="audio/wav">
+    </audio>
+
+    <script>
+        // medbasha
+        const DB_NAME = 'GuardianOlvidosDB';
+        const DB_VERSION = 1;
+        let db = null;
+
+        function initDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (e) => {
+                    const dbRef = e.target.result;
+                    if (!dbRef.objectStoreNames.contains('session')) {
+                        dbRef.createObjectStore('session', { keyPath: 'id' });
+                    }
+                    if (!dbRef.objectStoreNames.contains('logs')) {
+                        dbRef.createObjectStore('logs', { keyPath: 'timestamp' });
+                    }
+                };
+                request.onsuccess = (e) => {
+                    db = e.target.result;
+                    resolve(db);
+                };
+                request.onerror = (e) => reject(e.target.error);
+            });
+        }
+
+        async function saveSessionData(data) {
+            if (!db) await initDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('session', 'readwrite');
+                const store = tx.objectStore('session');
+                store.put({ id: 'current_device', ...data });
+                tx.oncomplete = () => resolve();
+                tx.onerror = (e) => reject(e.target.error);
+            });
+        }
+
+        async function saveLogData(msg) {
+            if (!db) return;
+            const tx = db.transaction('logs', 'readwrite');
+            const store = tx.objectStore('logs');
+            store.put({ timestamp: Date.now(), timeStr: new Date().toLocaleTimeString(), message: msg });
+        }
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js', { scope: './' })
+                    .then(reg => console.log('Service Worker registrado:', reg.scope))
+                    .catch(err => console.error('Error SW:', err));
+            });
+        }
+
+        const startRadarBtn = document.getElementById('startRadarBtn');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const statusBadge = document.getElementById('statusBadge');
+        const lastSeen = document.getElementById('lastSeen');
+        const alarmZone = document.getElementById('alarmZone');
+        const silentAudio = document.getElementById('silentAudio');
+        const logTerminal = document.getElementById('logTerminal');
+
+        let bluetoothDevice = null;
+        let gattServer = null;
+        let monitorInterval = null;
+        let failedAttempts = 0;
+        const MAX_FAILED_ATTEMPTS = 3; 
+        let wakeLock = null;
+
+        function addLog(msg) {
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.textContent = `[${time}] ${msg}`;
+            logTerminal.appendChild(entry);
+            logTerminal.scrollTop = logTerminal.scrollHeight;
+            saveLogData(msg).catch(() => {});
+        }
+
+        if (Notification.permission !== "granted") {
+            Notification.requestPermission();
+        }
+
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    addLog("Modo de alta prioridad activado.");
+                }
+            } catch (err) {
+                addLog("Prioridad de fondo activa mediante audio.");
+            }
+        }
+
+        window.addEventListener('load', async () => {
+            await initDB();
+            comprobarMemoriaDispositivos();
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && bluetoothDevice && (!bluetoothDevice.gatt || !bluetoothDevice.gatt.connected)) {
+                addLog("App en primer plano: reenganchando canal GATT...");
+                conectarGATT();
+            }
+        });
+
+        async function comprobarMemoriaDispositivos() {
+            if ('bluetooth' in navigator && 'getDevices' in navigator.bluetooth) {
+                try {
+                    const devices = await navigator.bluetooth.getDevices();
+                    if (devices.length > 0) {
+                        bluetoothDevice = devices[0];
+                        addLog(`Dispositivo recordado en memoria: ${bluetoothDevice.name || 'Xiaomi Tag'}`);
+                        
+                        await saveSessionData({ name: bluetoothDevice.name, deviceId: bluetoothDevice.id, lastSeen: Date.now() });
+
+                        bluetoothDevice.addEventListener('gattserverdisconnected', manejarDesconexionInteligente);
+                        
+                        statusBadge.textContent = "Reenganchando Tag...";
+                        statusBadge.className = "text-lg font-semibold text-brandOrange";
+                        
+                        silentAudio.play().catch(e => console.log(e));
+                        await requestWakeLock();
+                        await conectarGATT();
+                    }
+                } catch (e) {
+                    addLog("Sin dispositivos previos en memoria.");
+                }
+            }
+        }
+
+        startRadarBtn.addEventListener('click', () => {
+            solicitarDispositivo();
+        });
+
+        reconnectBtn.addEventListener('click', () => {
+            intentarReconexionManual();
+        });
+
+        async function solicitarDispositivo() {
+            try {
+                silentAudio.play().catch(e => console.log(e));
+                await requestWakeLock();
+
+                addLog("Buscando Xiaomi Tag...");
+                statusBadge.textContent = "Buscando...";
+                statusBadge.className = "text-lg font-semibold text-brandOrange";
+
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: ['battery_service', 'device_information', 0x180f, 0x180a]
+                });
+
+                addLog(`Dispositivo enlazado: ${bluetoothDevice.name || 'Xiaomi Tag'}`);
+                await saveSessionData({ name: bluetoothDevice.name, deviceId: bluetoothDevice.id, lastSeen: Date.now() });
+
+                bluetoothDevice.addEventListener('gattserverdisconnected', manejarDesconexionInteligente);
+
+                await conectarGATT();
+
+            } catch (error) {
+                addLog(`Cancelado o error: ${error.message || error}`);
+                statusBadge.textContent = "Radar Inactivo";
+                statusBadge.className = "text-lg font-semibold text-brandOrange";
+            }
+        }
+
+        async function conectarGATT() {
+            try {
+                if (!bluetoothDevice) return;
+
+                addLog("Conectando canal GATT inteligente...");
+                gattServer = await bluetoothDevice.gatt.connect();
+
+                failedAttempts = 0;
+                statusBadge.textContent = "Radar Activo (En Rango)";
+                statusBadge.className = "text-lg font-semibold text-brandGreen";
+                lastSeen.textContent = "Sincronizado con: " + (bluetoothDevice.name || "Xiaomi Tag");
+                alarmZone.classList.add('hidden');
+                reconnectBtn.classList.add('hidden');
+
+                addLog("Conexión GATT estable.");
+                iniciarMonitoreoInteligente();
+
+            } catch (e) {
+                addLog(`Fallo al conectar GATT: ${e.message || e}`);
+                manejarDesconexionInteligente();
+            }
+        }
+
+        function iniciarMonitoreoInteligente() {
+            if (monitorInterval) clearInterval(monitorInterval);
+
+            monitorInterval = setInterval(async () => {
+                if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                    try {
+                        await bluetoothDevice.gatt.getPrimaryServices();
+                        failedAttempts = 0; 
+                        lastSeen.textContent = `Verificado OK: ${new Date().toLocaleTimeString()}`;
+                    } catch (err) {
+                        failedAttempts++;
+                        addLog(`Micro-corte detectado (${failedAttempts}/${MAX_FAILED_ATTEMPTS})...`);
+                        if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+                            manejarDesconexionInteligente();
+                        }
+                    }
+                } else {
+                    failedAttempts++;
+                    addLog(`Sin respuesta GATT (${failedAttempts}/${MAX_FAILED_ATTEMPTS})...`);
+                    if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+                        manejarDesconexionInteligente();
+                    }
+                }
+            }, 4000);
+        }
+
+        async function manejarDesconexionInteligente() {
+            if (monitorInterval) clearInterval(monitorInterval);
+
+            addLog("Iniciando reconexión silenciosa...");
+            statusBadge.textContent = "Reconectando en segundo plano...";
+            statusBadge.className = "text-lg font-semibold text-brandOrange font-bold";
+
+            let reconectado = false;
+            for (let i = 1; i <= 3; i++) {
+                addLog(`Auto-reconexión ${i}/3...`);
+                try {
+                    if (bluetoothDevice && bluetoothDevice.gatt) {
+                        await bluetoothDevice.gatt.connect();
+                        reconectado = true;
+                        addLog("Reconexión automática exitosa.");
+                        break;
+                    }
+                } catch (e) {
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+
+            if (reconectado) {
+                failedAttempts = 0;
+                statusBadge.textContent = "Radar Activo (En Rango)";
+                statusBadge.className = "text-lg font-semibold text-brandGreen";
+                iniciarMonitoreoInteligente();
+            } else {
+                dispararAlarmaDefinitiva();
+            }
+        }
+
+        function dispararAlarmaDefinitiva() {
+            statusBadge.textContent = "¡ALERTA: DISPOSITIVO PERDIDO!";
+            statusBadge.className = "text-lg font-semibold text-brandOrange font-bold";
+            reconnectBtn.classList.remove('hidden');
+
+            if (alarmZone.classList.contains('hidden')) {
+                alarmZone.classList.remove('hidden');
+                addLog("ALERTA CONFIRMADA: Dispositivo fuera de rango.");
+
+                if (navigator.vibrate) {
+                    navigator.vibrate([300, 150, 300, 150, 300]);
+                }
+
+                if (Notification.permission === "granted") {
+                    navigator.serviceWorker.ready.then(registration => {
+                        registration.showNotification("⚠️ ¡Guardián de Olvidos!", {
+                            body: "Se ha perdido la señal de tu Xiaomi Tag.",
+                            icon: "./icon.svg",
+                            tag: 'alerta-olvido-guardian',
+                            requireInteraction: true
+                        });
+                    });
+                }
+
+                ejecutarSonidoAlerta();
+            }
+        }
+
+        async function intentarReconexionManual() {
+            if (bluetoothDevice) {
+                addLog("Reintentando conexión manual...");
+                await conectarGATT();
+            } else {
+                solicitarDispositivo();
+            }
+        }
+
+        function ejecutarSonidoAlerta() {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(659.25, audioCtx.currentTime);
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+
+                gainNode.gain.setValueAtTime(0.4, audioCtx.currentTime);
+
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 2.0);
+            } catch (e) {
+                console.log(e);
+            }
+        }
+    </script>
+</body>
+</html>
